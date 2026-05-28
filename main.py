@@ -3,33 +3,65 @@ import random
 import string
 import time
 import re
+from datetime import datetime
 
 BASE_URL = "https://api.mail.tm"
 
-# =========================
-# GERAR EMAIL ALEATÓRIO
-# =========================
+CHECK_INTERVAL = 10
+
+# ==========================================
+# SESSION HTTP
+# ==========================================
+
+session = requests.Session()
+
+# ==========================================
+# GERAR STRING ALEATÓRIA
+# ==========================================
 
 def random_string(length=10):
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+    return ''.join(
+        random.choices(
+            string.ascii_lowercase + string.digits,
+            k=length
+        )
+    )
 
-# =========================
+# ==========================================
 # PEGAR DOMÍNIO DISPONÍVEL
-# =========================
+# ==========================================
 
 def get_domain():
-    response = requests.get(f"{BASE_URL}/domains")
+    try:
+        response = session.get(
+            f"{BASE_URL}/domains",
+            timeout=15
+        )
 
-    data = response.json()
+        response.raise_for_status()
 
-    return data["hydra:member"][0]["domain"]
+        data = response.json()
 
-# =========================
+        domains = data.get("hydra:member", [])
+
+        if not domains:
+            raise Exception("Nenhum domínio encontrado.")
+
+        return domains[0]["domain"]
+
+    except Exception as e:
+        print(f"[ERRO] Falha ao obter domínio: {e}")
+        return None
+
+# ==========================================
 # CRIAR CONTA
-# =========================
+# ==========================================
 
 def create_account():
     domain = get_domain()
+
+    if not domain:
+        return None
 
     username = random_string()
 
@@ -42,21 +74,27 @@ def create_account():
         "password": password
     }
 
-    response = requests.post(
-        f"{BASE_URL}/accounts",
-        json=payload
-    )
+    try:
+        response = session.post(
+            f"{BASE_URL}/accounts",
+            json=payload,
+            timeout=15
+        )
 
-    if response.status_code != 201:
-        print("Erro ao criar conta")
-        print(response.text)
+        if response.status_code != 201:
+            print("[ERRO] Falha ao criar conta")
+            print(response.text)
+            return None
+
+        return email, password
+
+    except Exception as e:
+        print(f"[ERRO] Create account: {e}")
         return None
 
-    return email, password
-
-# =========================
+# ==========================================
 # LOGIN
-# =========================
+# ==========================================
 
 def login(email, password):
     payload = {
@@ -64,66 +102,88 @@ def login(email, password):
         "password": password
     }
 
-    response = requests.post(
-        f"{BASE_URL}/token",
-        json=payload
-    )
+    try:
+        response = session.post(
+            f"{BASE_URL}/token",
+            json=payload,
+            timeout=15
+        )
 
-    if response.status_code != 200:
-        print("Erro no login")
-        print(response.text)
+        if response.status_code != 200:
+            print("[ERRO] Login falhou")
+            print(response.text)
+            return None
+
+        token = response.json().get("token")
+
+        return token
+
+    except Exception as e:
+        print(f"[ERRO] Login: {e}")
         return None
 
-    token = response.json()["token"]
+# ==========================================
+# HEADERS AUTH
+# ==========================================
 
-    return token
+def auth_headers(token):
+    return {
+        "Authorization": f"Bearer {token}"
+    }
 
-# =========================
+# ==========================================
 # PEGAR MENSAGENS
-# =========================
+# ==========================================
 
 def get_messages(token):
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    try:
+        response = session.get(
+            f"{BASE_URL}/messages",
+            headers=auth_headers(token),
+            timeout=15
+        )
 
-    response = requests.get(
-        f"{BASE_URL}/messages",
-        headers=headers
-    )
+        if response.status_code != 200:
+            return []
 
-    if response.status_code != 200:
+        data = response.json()
+
+        return data.get("hydra:member", [])
+
+    except Exception as e:
+        print(f"[ERRO] Get messages: {e}")
         return []
 
-    return response.json()["hydra:member"]
-
-# =========================
-# PEGAR CONTEÚDO DA MENSAGEM
-# =========================
+# ==========================================
+# PEGAR MENSAGEM COMPLETA
+# ==========================================
 
 def get_message(token, message_id):
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    try:
+        response = session.get(
+            f"{BASE_URL}/messages/{message_id}",
+            headers=auth_headers(token),
+            timeout=15
+        )
 
-    response = requests.get(
-        f"{BASE_URL}/messages/{message_id}",
-        headers=headers
-    )
+        if response.status_code != 200:
+            return None
 
-    if response.status_code != 200:
+        return response.json()
+
+    except Exception as e:
+        print(f"[ERRO] Get message: {e}")
         return None
 
-    return response.json()
-
-# =========================
-# EXTRAIR CÓDIGO
-# =========================
+# ==========================================
+# EXTRAIR CÓDIGOS
+# ==========================================
 
 def extract_code(text):
     patterns = [
         r"\b\d{4,8}\b",
-        r"\b[A-Z0-9]{6}\b"
+        r"\b[A-Z0-9]{6}\b",
+        r"\b[A-Z0-9]{8}\b"
     ]
 
     for pattern in patterns:
@@ -134,9 +194,35 @@ def extract_code(text):
 
     return None
 
-# =========================
+# ==========================================
+# EXTRAIR LINKS
+# ==========================================
+
+def extract_links(text):
+    pattern = r'https?://[^\s<>"\']+'
+
+    links = re.findall(pattern, text)
+
+    clean_links = []
+
+    for link in links:
+        link = link.strip('">),.')
+
+        if link not in clean_links:
+            clean_links.append(link)
+
+    return clean_links
+
+# ==========================================
+# FORMATADOR
+# ==========================================
+
+def separator():
+    print("\n" + "=" * 50)
+
+# ==========================================
 # MAIN
-# =========================
+# ==========================================
 
 def main():
     account = create_account()
@@ -146,19 +232,21 @@ def main():
 
     email, password = account
 
-    print("\n==============================")
+    separator()
     print("EMAIL TEMPORÁRIO CRIADO")
-    print("==============================")
-    print(f"Email: {email}")
-    print(f"Senha: {password}")
-    print("==============================\n")
+    separator()
+
+    print(f"Email : {email}")
+    print(f"Senha : {password}")
+
+    separator()
 
     token = login(email, password)
 
     if not token:
         return
 
-    print("Monitorando emails...\n")
+    print("\nMonitorando emails...\n")
 
     checked_messages = set()
 
@@ -167,7 +255,10 @@ def main():
             messages = get_messages(token)
 
             for msg in messages:
-                msg_id = msg["id"]
+                msg_id = msg.get("id")
+
+                if not msg_id:
+                    continue
 
                 if msg_id in checked_messages:
                     continue
@@ -179,34 +270,66 @@ def main():
                 if not full_message:
                     continue
 
-                sender = full_message["from"]["address"]
+                sender = (
+                    full_message.get("from", {})
+                    .get("address", "Desconhecido")
+                )
+
                 subject = full_message.get("subject", "")
+
                 text = full_message.get("text", "")
 
-                full_text = f"{subject}\n{text}"
+                html = ""
+
+                if full_message.get("html"):
+                    html = " ".join(full_message["html"])
+
+                full_text = f"""
+                {subject}
+
+                {text}
+
+                {html}
+                """
 
                 code = extract_code(full_text)
 
-                print("\n==============================")
+                links = extract_links(full_text)
+
+                separator()
                 print("NOVO EMAIL RECEBIDO")
-                print("==============================")
-                print(f"De: {sender}")
-                print(f"Assunto: {subject}")
+                separator()
+
+                print(f"Horário : {datetime.now().strftime('%H:%M:%S')}")
+                print(f"De       : {sender}")
+                print(f"Assunto  : {subject}")
 
                 if code:
-                    print(f"Código detectado: {code}")
+                    separator()
+                    print("CÓDIGO DETECTADO")
+                    separator()
+                    print(code)
 
-                print("==============================")
+                if links:
+                    separator()
+                    print("LINKS ENCONTRADOS")
+                    separator()
 
-            time.sleep(5)
+                    for link in links:
+                        print(link)
+
+                separator()
+
+            time.sleep(CHECK_INTERVAL)
 
         except KeyboardInterrupt:
-            print("\nEncerrando...")
+            print("\n[INFO] Encerrando monitoramento...")
             break
 
         except Exception as e:
-            print(f"Erro: {e}")
-            time.sleep(5)
+            print(f"\n[ERRO LOOP] {e}")
+
+            time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
